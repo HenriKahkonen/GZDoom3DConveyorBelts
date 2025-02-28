@@ -1,0 +1,38 @@
+===========================================================================
+Advanced engine needed  : Tested on GZDoom g4.14.0
+Primary purpose         : Technical demo of 3D sectors scrolling items on top of them
+===========================================================================
+Title                   : 3D Conveyor Belts Demo
+Filename                : Conveyors3D Demo.wad
+Release date            : February 28, 2025
+Author                  : Henri Kähkönen aka HenKonen
+Email Address           : henkonenvideo@gmail.com
+
+Description             : Straight to north, south, east and west heading escalators work fine, diagonal ones are finicky at the moment.
+
+===========================================================================
+* Play Information *
+
+Executable needed       : GZDoom g4.14.0
+IWAD Needed             : DOOM2.WAD
+Map #                   : MAP01
+Single Player           : Yes
+Cooperative 2-4 Player  : Yes
+Deathmatch 2-4 Player   : No
+Other game styles       : No
+Difficulty Settings     : No
+New Graphics            : No
+New Sounds              : No
+New Demos               : No
+DEH Patch               : No
+
+===========================================================================
+* Copyright / Permissions *
+
+Authors MAY use the contents of this file as a base for modification or reuse
+as long as they give credit to me.
+
+You MAY distribute this file, provided you include this text file, with
+no modifications.  You may distribute this file in any
+format as long as you include this file 
+intact.

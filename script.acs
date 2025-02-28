@@ -1,0 +1,273 @@
+#include "zcommon.acs"
+
+//     CONVEYER BELTS TODO / ISSUES
+//    1. Diagonal ones working sometimes work fine and straight ones working kinda finicky, now that the straight ones work better the diagonal ones get messed up.
+//    2. Conveyor belts don't push medikits (or other items?) as of now, barrels get pushed as expected
+
+//
+// CONVEYOR BELT SCRIPTS START
+//
+
+// Set up your conveyor by creating a 3D floor.
+// Place an "actor hits floor" -thing in the sector outside the level geometry.
+// Set the thing to always activate the "SlowConv" script
+// Place two map markers at the beginning and end of the conveyor belt, pass the markers' tags as parameters to the script as well as the width of the conveyor belt platform
+
+// 1. Define some values for conveyor belts
+#define DEBUGGING true
+#define DEBUG_DISPLAYTIME 5
+
+#define CONV_TEXTURE_SCROLL_SPEED 46    // Default 46
+#define CONV_SPEED 1                    // Default 1: developed with slow conveyor belts
+#define CONV_FREQ 11                    // Default 11: developed with slow conveyor belts
+#define CONV_INIT_THRUST 11                // How many tics the conveyor will thrust upon first step on conveyor regardless of actor position.
+#define CONV_Z_THRUST_RANGE 10             // Z range in which to apply thrust, default 10. Used to disconnect thrusting action if player e.g. jumps or is blasted airborne by a rocket
+#define CONV_XY_LEEWAY 4                // XY range in which to apply thrust, default 4. Used to give a little bit of wiggle room to make stepping out of the conveyor more natural. If the math doesn't add up add a random constant, thanks Einstein
+
+// 2. Scroll conveyor belt textures
+// Note that applying rotation to textures affects the direction of scrolling here
+// Most common directions in easily replicable arrays here
+#define NORTH_CONVS 4
+#define EAST_CONVS 5
+#define SOUTH_CONVS 5
+#define WEST_CONVS 4
+#define NE_CONVS 2
+#define SE_CONVS 2
+#define SW_CONVS 2
+#define NW_CONVS 2
+int NorthConvs[NORTH_CONVS]= {115,117,104,102}; // Tags of sloped 3D planes outside of level geometry
+int EastConvs[EAST_CONVS] = {108,109,110,111,66};
+int SouthConvs[SOUTH_CONVS] = {103,105,114,116,67};
+int WestConvs[WEST_CONVS] = {106,107,112,113};
+int NEConvs[NE_CONVS]= {40,37};
+int SEConvs[SE_CONVS] = {42,39};
+int SWConvs[SW_CONVS] = {36,41};
+int NWConvs[NW_CONVS] = {38,43};
+    script 1 OPEN {
+    for (int sectN=0; sectN < NORTH_CONVS; sectN++) //conveyor belts going north
+        {Scroll_Ceiling(NorthConvs[sectN],0,CONV_TEXTURE_SCROLL_SPEED,0);}
+
+    for (int sectE=0; sectE < EAST_CONVS; sectE++) //conveyor belts going east
+        {Scroll_Ceiling(EastConvs[sectE],CONV_TEXTURE_SCROLL_SPEED,0,0);}
+
+    for (int sectS=0; sectS < SOUTH_CONVS; sectS++) //conveyor belts going south
+        {Scroll_Ceiling(SouthConvs[sectS],0,-CONV_TEXTURE_SCROLL_SPEED,0);}
+
+    for (int sectW=0; sectW < WEST_CONVS; sectW++) //conveyor belts going west
+        {Scroll_Ceiling(WestConvs[sectW],-CONV_TEXTURE_SCROLL_SPEED,0,0);}
+
+    for (int sectNE=0; sectNE < NE_CONVS; sectNE++) //conveyor belts going northeast
+        {Scroll_Ceiling(NEConvs[sectNE],CONV_TEXTURE_SCROLL_SPEED/2,CONV_TEXTURE_SCROLL_SPEED/2,0);}
+
+    for (int sectSE=0; sectSE < SE_CONVS; sectSE++) //conveyor belts going southeast
+        {Scroll_Ceiling(SEConvs[sectSE],CONV_TEXTURE_SCROLL_SPEED/2,-CONV_TEXTURE_SCROLL_SPEED/2,0);}
+
+    for (int sectSW=0; sectSW < SW_CONVS; sectSW++) //conveyor belts going southwest
+        {Scroll_Ceiling(SWConvs[sectSW],-CONV_TEXTURE_SCROLL_SPEED/2,-CONV_TEXTURE_SCROLL_SPEED/2,0);}
+
+    for (int sectNW=0; sectNW < NW_CONVS; sectNW++) //conveyor belts going northwest
+        {Scroll_Ceiling(NWConvs[sectNW],-CONV_TEXTURE_SCROLL_SPEED/2,CONV_TEXTURE_SCROLL_SPEED/2,0);}
+
+}
+
+// The actual script
+script "SlowConv" (int StartMarker, int EndMarker, int Width) {
+
+    int PushFreq = CONV_FREQ;
+    int PushForce = CONV_SPEED;
+    int Zrange = CONV_Z_THRUST_RANGE;
+    int InitialThrustTics = CONV_INIT_THRUST;
+
+    int ActorXYZ[3] = {(getActorX(0)>> 16),(getActorY(0)>> 16),(getActorZ(0)>> 16)}; // Get the location of the actor stepping on the conveyor belt
+    int actorRadius = (GetActorProperty(0,APROP_Radius)>>16); // Get the width of the actor: wider things should get pushed longer when they step off conveyor belt
+
+    int Start[3] = {(getActorX(StartMarker)>> 16),(getActorY(StartMarker)>> 16),(getActorZ(StartMarker)>> 16)};
+    int End[3] = {(getActorX(EndMarker)>> 16),(getActorY(EndMarker)>> 16),(getActorZ(EndMarker)>> 16)};
+    int ConvLen[3] = {(End[0]-Start[0]),(End[1]-Start[1]),(End[2]-Start[2])};
+    int FullXYHypotenuse = Sqrt(ConvLen[0]*ConvLen[0] + ConvLen[1]*ConvLen[1]);
+
+    // These values get updated later based on actor's position and Conveyor Belt's Dimensions
+    // These values are then used to determine when actor has stepped outside the boundaries of the conveyor belt
+    int ThrustMin[3] = {0,0,0};
+    int ThrustMax[3] = {0,0,0};
+
+    // Deduce the conveyor belts width on X and Y axis. Use Width parameter and conveyor belt's angle (based on locations of the start/end markers)
+    int ConvByteAng = VectorAngle(ConvLen[0],ConvLen[1]) >> 8;
+
+    // Deduce the conveyor belt's angle's distance from the X-axis (North-south) as an absolute value between 0-100 (0 = straight north or south, 100 = straight east or west)
+    //         SouthEast (224)     SouthWest (160)        Northwest (96)        Northeast (32)
+    //         North (64)             South (192)
+    //        West (128)             East (0)
+    int SNAxisDeviance = ConvByteAng;
+    if (SNAxisDeviance>=128)
+        {SNAxisDeviance=SNAxisDeviance-128;}
+    if (SNAxisDeviance>64)
+        {SNAxisDeviance=SNAxisDeviance-64;}
+    SNAxisDeviance = 100*abs(SNAxisDeviance-64)/64;
+    int XWidth = (100-SNAxisDeviance)*Width/100; // Don't laugh, I really like representing percentages as integers
+    int YWidth = Width-XWidth;
+
+    if (DEBUGGING) {
+    SetHudSize(960,540,0);
+    hudMessage(s:"*Touch!*";HUDMSG_PLAIN,39,CR_gold,700.5,300.0,1.0);
+    hudMessage(s:"*Feet touched conveyor belt at*";HUDMSG_PLAIN,40,CR_gold,700.5,310.0,0);
+    hudMessage(i:ActorXYZ[0],s:" ",i:actorXYZ[1],s:" ",i:actorXYZ[2];HUDMSG_PLAIN,41,CR_white,700.5,320.0,0);
+    }
+
+    bool FeetOnConveyorBelt = True;
+    int PushInterval = PushFreq;
+
+    // Initial mandatory push when touching the conveyor belt
+    while (InitialThrustTics>0) {
+        if (PushInterval == 0) {
+            ThrustThing((ConvByteAng),PushForce,0,0);
+            PushInterval = PushFreq;
+        } else {
+            PushInterval--;
+        }
+        InitialThrustTics--;
+        delay(1);
+    }
+
+    // Thrusting loop Starts here
+    while (FeetOnConveyorBelt){
+        if (PushInterval == 0) {
+            ThrustThing((ConvByteAng),PushForce,0,0);
+            PushInterval = PushFreq;
+        } else {
+            PushInterval--;
+        }
+        delay(1);
+
+        // Update actor XYZ position
+        ActorXYZ[0] = (getActorX(0)>> 16);    ActorXYZ[1] = (getActorY(0)>> 16);    ActorXYZ[2] = (getActorZ(0)>> 16);
+
+        //Deduce how much of the total length of the conveyor belt actor has traversed
+        int ActorXDistanceToStart = abs(Start[0]-ActorXYZ[0]);
+        int ActorYDistanceToStart = abs(Start[1]-ActorXYZ[1]);
+        int ActorXYDistanceToStart = Sqrt(ActorXDistanceToStart*ActorXDistanceToStart + ActorYDistanceToStart*ActorYDistanceToStart );
+        //Use this information to deduce approximations on a what dimensions feet would still be on the conveyor belt
+        int ConvZatCurrentPoint = ConvLen[2] * (min(ActorXYDistanceToStart,FullXYHypotenuse)) / FullXYHypotenuse;
+        int ConvXatCurrentPoint = ConvLen[0] * (min(ActorXDistanceToStart,FullXYHypotenuse)) / FullXYHypotenuse;
+        int ConvYatCurrentPoint = ConvLen[1] * (min(ActorYDistanceToStart,FullXYHypotenuse)) / FullXYHypotenuse;
+
+        //Deduce Modifiers to add to the acceptable dimensions and update max values of thrust
+        int Xdir = 1; int Ydir = 1;
+        if (ConvLen[0]<0) {XDir = -1;}
+        if (ConvLen[1]<0) {Ydir = -1;}
+        int Xmods = (Xdir*xWidth/2)+(CONV_XY_LEEWAY)+(actorRadius);
+        int Ymods = (Ydir*yWidth/2)+(CONV_XY_LEEWAY)+(actorRadius);
+        ThrustMin[0] = Start[0] + ConvXatCurrentPoint - Xmods;
+        ThrustMax[0] = Start[0] + ConvXatCurrentPoint + Xmods;
+        ThrustMin[1] = Start[1] + ConvYatCurrentPoint - Ymods;
+        ThrustMax[1] = Start[1] + ConvYatCurrentPoint + Ymods;
+        ThrustMin[2] = Start[2] + ConvZatCurrentPoint - Zrange;
+        ThrustMax[2] = Start[2] + ConvZatCurrentPoint + Zrange;
+
+        // Conveyors heading to negative value on an axis need their extremities' values swapped
+        int swapper;
+        if (ThrustMin[0] > ThrustMax[0]) {
+            swapper = ThrustMin[0];
+            ThrustMin[0] = ThrustMax[0];
+            ThrustMax[0] = swapper ;
+        }
+        if (ThrustMin[1] > ThrustMax[1]) {
+            swapper = ThrustMin[1];
+            ThrustMin[1] = ThrustMax[1];
+            ThrustMax[1] = swapper;
+        }
+
+        // Print data while on conveyor belt, TODO: Clean up these prints
+        if (DEBUGGING) {
+        SetHudSize(960,540,1);
+        hudmessage(s:"Entered conveyorbelt sector with markers ",i:StartMarker,s:" to ",i:EndMarker;
+        HUDMSG_plain,1,CR_gold,700.5,10.0,DEBUG_DISPLAYTIME);
+
+        hudmessage(    s:"(Direction angle ",i:ConvByteAng,    s:")";HUDMSG_plain,32,CR_white,700.5,20.0,DEBUG_DISPLAYTIME);
+
+        hudmessage(s:"Min";HUDMSG_plain,2,CR_gold,760.5,40.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"X: ",i:ThrustMin[0];HUDMSG_plain,3,CR_white,760.5,50.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"Y: ",i:ThrustMin[1];HUDMSG_plain,4,CR_white,760.5,60.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"Z: ",i:ThrustMin[2];HUDMSG_plain,5,CR_white,760.5,70.0,DEBUG_DISPLAYTIME);
+
+        hudmessage(s:"Max XYZ to thrust: ";HUDMSG_plain,10,CR_gold,820.5,40.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:ThrustMax[0];HUDMSG_plain,11,CR_white,820.5,50.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:ThrustMax[1];HUDMSG_plain,12,CR_white,820.5,60.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:ThrustMax[2];HUDMSG_plain,13,CR_white,820.5,70.0,DEBUG_DISPLAYTIME);
+
+        hudmessage(s:"Conv Start / End / Lengths: ";HUDMSG_plain,14,CR_gold,700.5,90.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:Start[0],s:" ",i:End[0];HUDMSG_plain,15,CR_white,700.5,100.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:Start[1],s:" ",i:End[1];HUDMSG_plain,16,CR_white,700.5,110.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:Start[2],s:" ",i:End[2];HUDMSG_plain,17,CR_white,700.5,120.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"(X len ",i:ConvLen[0],s:")";HUDMSG_plain,19,CR_white,820.5,100.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"(Y len ",i:ConvLen[1],s:")";HUDMSG_plain,20,CR_white,820.5,110.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"(Z len ",i:ConvLen[2],s:")";HUDMSG_plain,21,CR_white,820.5,120.0,DEBUG_DISPLAYTIME);
+
+        hudmessage(s:"Conv Start / End / Lengths: ";HUDMSG_plain,14,CR_gold,700.5,90.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:Start[0],s:" ",i:End[0];HUDMSG_plain,15,CR_white,700.5,100.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:Start[1],s:" ",i:End[1];HUDMSG_plain,16,CR_white,700.5,110.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:Start[2],s:" ",i:End[2];HUDMSG_plain,17,CR_white,700.5,120.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"(X len ",i:ConvLen[0],s:")";HUDMSG_plain,19,CR_white,820.5,100.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"(Y len ",i:ConvLen[1],s:")";HUDMSG_plain,20,CR_white,820.5,110.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"(Z len ",i:ConvLen[2],s:")";HUDMSG_plain,21,CR_white,820.5,120.0,DEBUG_DISPLAYTIME);
+
+        hudmessage(s:"Xmods: ",i:Xdir,s:"*",i:xWidth,s:" + ",i:CONV_XY_LEEWAY,s:" + ",i:actorRadius;HUDMSG_plain,22,CR_white,700.5,140.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"Ymods: ",i:Ydir,s:"*",i:yWidth,s:" + ",i:CONV_XY_LEEWAY,s:" + ",i:actorRadius;HUDMSG_plain,23,CR_white,700.5,150.0,DEBUG_DISPLAYTIME);
+
+        hudmessage(s:"Expected X at current point: ",i:ConvXAtCurrentPoint;HUDMSG_plain,24,CR_white,700.5,170.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"Expected Y at current point: ",i:ConvYAtCurrentPoint;HUDMSG_plain,25,CR_white,700.5,180.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"Expected Z at current point: ",i:ConvZAtCurrentPoint;HUDMSG_plain,26,CR_white,700.5,190.0,DEBUG_DISPLAYTIME);
+
+
+        hudmessage(s:"Conv plane Xwidth and YWidth:";HUDMSG_plain,30,CR_gold,700.5,240.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:XWidth,s:" ",i:YWidth,s:" (",i:Width,s:")";HUDMSG_plain,31,CR_white,700.5,250.0,DEBUG_DISPLAYTIME);
+        hudmessage(s:"Conv angle deviance from North-South:";HUDMSG_plain,33,CR_gold,700.5,260.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:SNAxisDeviance;HUDMSG_plain,34,CR_white,700.5,270.0,DEBUG_DISPLAYTIME);
+
+        hudMessage(s:"On a conveyor belt!";HUDMSG_PLAIN,35,CR_GREEN,700.5,310.0,DEBUG_DISPLAYTIME);
+        }
+
+        // Break Loop if actor moves outside acceptable coordinates
+        if (
+            ActorXYZ[2] < ThrustMin[2]-1 | ActorXYZ[2] > ThrustMax[2]-1 |
+            ActorXYZ[0] < (ThrustMin[0])-1 | ActorXYZ[0] > (ThrustMax[0])-1 |
+            ActorXYZ[1] < (ThrustMin[1])-1 | ActorXYZ[1] > (ThrustMax[1])-1
+            ){
+                FeetOnConveyorBelt = False;
+                if (DEBUGGING) {hudMessage(s:"Not on a conveyor belt!";HUDMSG_PLAIN,35,CR_RED,700.5,310.0,DEBUG_DISPLAYTIME);}
+        }
+
+        }
+}
+
+// Convenience scripts and functions re: Conveyor Belts
+script "DisplayPlayerLocation" enter {
+    while (DEBUGGING) {
+        SetHudSize(960,540,1);
+        int actorXYZ[3] = {(GetActorX(0)>>16),(GetActorY(0)>>16),(GetActorZ(0)>>16)};
+        hudmessage(s:"Actor";HUDMSG_plain,6,CR_gold,700.5,40.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:ActorXYZ[0];HUDMSG_plain,7,CR_white,700.5,50.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:ActorXYZ[1];HUDMSG_plain,8,CR_white,700.5,60.0,DEBUG_DISPLAYTIME);
+        hudmessage(i:ActorXYZ[2];HUDMSG_plain,9,CR_white,700.5,70.0,DEBUG_DISPLAYTIME);
+        delay(1);
+    }
+}
+
+function int abs (int x)
+{
+    if (x < 0)
+        return -x;
+
+    return x;
+}
+
+function int min (int x, int y) {
+    if (x < y) {
+        return x;
+    }
+    return y;
+}
+
+//
+// CONVEYOR BELT SCRIPTS END
+//
